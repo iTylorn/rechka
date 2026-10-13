@@ -1,0 +1,14 @@
+**/__pycache__/
+*.py[cod]
+**/.venv/
+**/build/
+**/dist/
+*.partial
+*.log
+turbo-gpu/
+llm-models/
+.test-data/
+.pytest_cache/
+releases/
+**/_downloads/
+**/llm_cache/

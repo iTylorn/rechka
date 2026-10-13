@@ -1,0 +1,40 @@
+WhisperGUI 1.5.0 — third-party components and model attribution
+=============================================================
+
+PySide6 / Qt 6.11.2
+  Copyright The Qt Company and contributors.
+  PySide6 Essentials package declares LGPL-3.0-only OR GPL-2.0-only OR
+  GPL-3.0-only. Qt libraries are distributed as separate DLLs in _internal.
+  Source and license information: https://www.qt.io/licensing/open-source-lgpl-obligations
+  PySide6 source: https://code.qt.io/cgit/pyside/pyside-setup.git/
+
+OpenVINO and OpenVINO GenAI 2026.3
+  Copyright Intel Corporation and contributors. Apache License 2.0.
+  Source and license: https://github.com/openvinotoolkit/openvino
+
+OpenVINO Tokenizers 2026.3
+  Copyright Intel Corporation and contributors. Apache License 2.0.
+  Source and license: https://github.com/openvinotoolkit/openvino_tokenizers
+
+FFmpeg 7.1 executable (imageio-ffmpeg / gyan.dev essentials build)
+  Copyright FFmpeg developers and contributors. This particular binary
+  reports GPL version 3 or later when invoked with -L.
+  Source: https://ffmpeg.org/download.html
+  Build information: https://www.gyan.dev/ffmpeg/builds/
+  License: https://www.gnu.org/licenses/gpl-3.0.html
+
+Included speaker embedding model: WeSpeaker ECAPA-TDNN-512 LM
+  Copyright WeSpeaker contributors. Creative Commons Attribution 4.0.
+  Original model: https://huggingface.co/Wespeaker/wespeaker-ecapa-tdnn512-LM
+  Pretrained model list: https://github.com/wenet-e2e/wespeaker/blob/master/docs/pretrained.md
+  License: https://creativecommons.org/licenses/by/4.0/
+  The included wespeaker_fixed.xml and wespeaker_fixed.bin are a local
+  OpenVINO conversion with a fixed input shape of the model weights.
+
+Models downloaded by the application on request:
+  Whisper large-v3-turbo INT8 (MIT):
+    https://huggingface.co/OpenVINO/whisper-large-v3-turbo-int8-ov
+  Qwen3-8B INT4 (Apache License 2.0):
+    https://huggingface.co/OpenVINO/Qwen3-8B-int4-ov
+  Qwen3-14B INT4 (Apache License 2.0):
+    https://huggingface.co/OpenVINO/Qwen3-14B-int4-ov
