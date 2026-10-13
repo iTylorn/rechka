@@ -3,13 +3,14 @@ from pathlib import Path
 
 from PySide6.QtCore import QTimer, Slot
 from PySide6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout,
+    QApplication, QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog, QFormLayout,
     QHBoxLayout, QLabel, QLineEdit, QMessageBox, QProgressBar,
     QPushButton, QSpinBox, QSplitter, QTextEdit, QVBoxLayout, QWidget,
 )
 
 from llm_processor import LLMProcessingWorker
 from prompt_library import PromptLibrary
+from model_installer import model_path_for
 
 
 class AIProcessingDialog(QDialog):
@@ -18,6 +19,14 @@ class AIProcessingDialog(QDialog):
         self.settings = settings
         self.library = PromptLibrary(settings.config_dir)
         self.worker = None
+        self._closing = False
+        self._close_result = QDialog.Rejected
+        self._model_installer = None
+        self._starting = False
+        self._auto_start_pending = bool(auto_start)
+        self._auto_start_timer = QTimer(self)
+        self._auto_start_timer.setSingleShot(True)
+        self._auto_start_timer.timeout.connect(self._run_auto_start)
         self.current_prompt = None
         self.last_output_path = ""
         self.setWindowTitle("Обработка расшифровки локальной нейросетью")
@@ -27,8 +36,8 @@ class AIProcessingDialog(QDialog):
         source_form = QFormLayout()
 
         models_root = Path(settings.get("llm_models_folder", ""))
-        model_8b = str(models_root / "Qwen3-8B-int4-ov")
-        model_14b = str(models_root / "Qwen3-14B-int4-ov")
+        model_8b = str(model_path_for(settings, "qwen8") or models_root / "Qwen3-8B-int4-ov")
+        model_14b = str(model_path_for(settings, "qwen14") or models_root / "Qwen3-14B-int4-ov")
         current_model = settings.get("llm_model_path", model_8b)
         self.model_preset_combo = QComboBox()
         self.model_preset_combo.addItem("Быстрая — Qwen3-8B INT4", model_8b)
@@ -45,13 +54,13 @@ class AIProcessingDialog(QDialog):
         )
         model_button = QPushButton("Обзор...")
         model_button.clicked.connect(self.browse_model)
-        install_model_button = QPushButton("Скачать модель...")
-        install_model_button.clicked.connect(self.install_model)
+        self.install_model_button = QPushButton("Модели и обновления...")
+        self.install_model_button.clicked.connect(self.install_model)
         model_row = QHBoxLayout()
         model_row.addWidget(self.model_preset_combo)
         model_row.addWidget(self.model_edit, 1)
         model_row.addWidget(model_button)
-        model_row.addWidget(install_model_button)
+        model_row.addWidget(self.install_model_button)
         source_form.addRow("Локальная LLM:", model_row)
 
         self.transcript_edit = QLineEdit(transcript_path or settings.get("last_transcript_path", ""))
@@ -152,7 +161,20 @@ class AIProcessingDialog(QDialog):
         layout.addWidget(self.progress_bar)
         self.refresh_prompts(settings.get("last_prompt_id", "meeting_protocol"))
         if auto_start:
-            QTimer.singleShot(200, self.start_processing)
+            self._auto_start_timer.start(200)
+
+    def _run_auto_start(self):
+        if self._closing or not self.isVisible() or not self._auto_start_pending:
+            return
+        if self.worker is not None:
+            self._auto_start_pending = False
+            return
+        modal = QApplication.activeModalWidget()
+        if self._model_installer is not None or self._starting or (modal is not None and modal is not self):
+            self._auto_start_timer.start(200)
+            return
+        self._auto_start_pending = False
+        self.start_processing()
 
     def refresh_prompts(self, selected_id=None):
         self.prompt_combo.blockSignals(True)
@@ -236,14 +258,26 @@ class AIProcessingDialog(QDialog):
     def install_model(self):
         from model_installer import ModelInstallerDialog
 
+        if self._closing or self.worker is not None or self._model_installer is not None:
+            return False
         model_key = "qwen14" if self.model_preset_combo.currentIndex() == 1 else "qwen8"
         dialog = ModelInstallerDialog(self.settings, self, initial_selection=(model_key,))
-        if not dialog.exec():
+        self._model_installer = dialog
+        try:
+            dialog.exec()
+        finally:
+            self._model_installer = None
+            dialog.deleteLater()
+        if self._closing:
+            self._request_close(self._close_result)
             return False
         models_root = Path(self.settings.get("llm_models_folder", ""))
-        self.model_preset_combo.setItemData(0, str(models_root / "Qwen3-8B-int4-ov"))
-        self.model_preset_combo.setItemData(1, str(models_root / "Qwen3-14B-int4-ov"))
-        installed = self.model_preset_combo.currentData()
+        self.model_preset_combo.setItemData(0, str(model_path_for(self.settings, "qwen8") or models_root / "Qwen3-8B-int4-ov"))
+        self.model_preset_combo.setItemData(1, str(model_path_for(self.settings, "qwen14") or models_root / "Qwen3-14B-int4-ov"))
+        installed = self.settings.get("llm_model_path", "")
+        index = self.model_preset_combo.findData(installed)
+        if index >= 0:
+            self.model_preset_combo.setCurrentIndex(index)
         if all((Path(installed) / name).is_file() for name in (
             "openvino_model.xml", "openvino_model.bin", "tokenizer.json"
         )):
@@ -257,6 +291,18 @@ class AIProcessingDialog(QDialog):
             self.transcript_edit.setText(path)
 
     def start_processing(self):
+        if (self._closing or self.worker is not None
+                or self._model_installer is not None or self._starting):
+            return
+        self._auto_start_pending = False
+        self._auto_start_timer.stop()
+        self._starting = True
+        try:
+            self._start_processing()
+        finally:
+            self._starting = False
+
+    def _start_processing(self):
         model_path = self.model_edit.text().strip()
         transcript_path = self.transcript_edit.text().strip()
         model_dir = Path(model_path)
@@ -292,8 +338,19 @@ class AIProcessingDialog(QDialog):
         self.worker.partial.connect(self.output_edit.setPlainText)
         self.worker.completed.connect(self.processing_completed)
         self.worker.error.connect(self.processing_error)
-        self.worker.finished.connect(lambda: self.set_running(False))
+        self.worker.finished.connect(self.on_worker_finished)
         self.worker.start()
+
+    @Slot()
+    def on_worker_finished(self):
+        worker = self.worker
+        self.worker = None
+        if worker is not None:
+            worker.deleteLater()
+        if self._closing:
+            self._request_close(self._close_result)
+        else:
+            self.set_running(False)
 
     def stop_processing(self):
         if self.worker and self.worker.isRunning():
@@ -304,6 +361,7 @@ class AIProcessingDialog(QDialog):
         self.start_button.setEnabled(not running)
         self.stop_button.setEnabled(running)
         self.prompt_combo.setEnabled(not running)
+        self.install_model_button.setEnabled(not running)
 
     @Slot(str)
     def append_log(self, message):
@@ -320,20 +378,49 @@ class AIProcessingDialog(QDialog):
         self.output_edit.setPlainText(result)
         self.open_folder_button.setEnabled(True)
         self.progress_bar.setValue(100)
-        QMessageBox.information(self, "Готово", f"Результат сохранён:\n{path}")
+        if not self._closing:
+            QMessageBox.information(self, "Готово", f"Результат сохранён:\n{path}")
 
     @Slot(str)
     def processing_error(self, message):
         self.output_edit.append(f"\nОШИБКА: {message}")
-        QMessageBox.critical(self, "Ошибка LLM", message)
+        if not self._closing:
+            QMessageBox.critical(self, "Ошибка LLM", message)
 
     def open_result_folder(self):
         if self.last_output_path and os.path.isfile(self.last_output_path):
             os.startfile(os.path.dirname(self.last_output_path))
 
+    def _request_close(self, result=QDialog.Rejected):
+        first_request = not self._closing
+        self._closing = True
+        if first_request:
+            self._close_result = result
+        self._auto_start_pending = False
+        self._auto_start_timer.stop()
+        if self.worker is not None:
+            self.worker.cancel()
+            self.stop_button.setEnabled(False)
+            if first_request:
+                self.append_log("Останавливаю обработку перед закрытием окна…")
+            return False
+        if self._model_installer is not None:
+            self._model_installer.close()
+            return False
+        super().done(self._close_result)
+        return True
+
+    def reject(self):
+        self._request_close(QDialog.Rejected)
+
+    def accept(self):
+        self._request_close(QDialog.Accepted)
+
+    def done(self, result):
+        self._request_close(result)
+
     def closeEvent(self, event):
-        if self.worker and self.worker.isRunning():
-            QMessageBox.information(self, "Обработка выполняется", "Сначала остановите обработку.")
+        if self._request_close():
+            event.accept()
+        else:
             event.ignore()
-            return
-        super().closeEvent(event)

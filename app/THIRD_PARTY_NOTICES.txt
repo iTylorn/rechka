@@ -1,4 +1,4 @@
-WhisperGUI 1.5.0 — third-party components and model attribution
+WhisperGUI 2.0.0-beta.1 — third-party components and model attribution
 =============================================================
 
 PySide6 / Qt 6.11.2
@@ -32,8 +32,12 @@ Included speaker embedding model: WeSpeaker ECAPA-TDNN-512 LM
   OpenVINO conversion with a fixed input shape of the model weights.
 
 Models downloaded by the application on request:
+  WeSpeaker ECAPA-TDNN-512 LM ONNX (CC BY 4.0), locally converted to OpenVINO IR:
+    https://huggingface.co/Wespeaker/wespeaker-ecapa-tdnn512-LM
   Whisper large-v3-turbo INT8 (MIT):
     https://huggingface.co/OpenVINO/whisper-large-v3-turbo-int8-ov
+  Whisper large-v3-turbo FP16 (MIT):
+    https://huggingface.co/OpenVINO/whisper-large-v3-turbo-fp16-ov
   Qwen3-8B INT4 (Apache License 2.0):
     https://huggingface.co/OpenVINO/Qwen3-8B-int4-ov
   Qwen3-14B INT4 (Apache License 2.0):

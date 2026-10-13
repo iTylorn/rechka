@@ -10,6 +10,11 @@ $pythonDirectory = Split-Path -Path $resolvedPython -Parent
 $systemDirectory = Join-Path $env:WINDIR "System32"
 $env:PATH = @($pythonDirectory, (Join-Path $pythonDirectory "Scripts"), $systemDirectory, $env:WINDIR) -join ";"
 
+& $resolvedPython -B -m unittest discover -s tests -p "test_*.py"
+if ($LASTEXITCODE -ne 0) {
+    throw "Application tests failed; release build aborted"
+}
+
 # PyInstaller creates an EXE in its work directory before COLLECT adds the
 # runtime DLLs. Keep that incomplete EXE outside the project to avoid
 # mistaking it for the runnable release under dist\WhisperGUI.

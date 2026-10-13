@@ -2,11 +2,14 @@ import gc
 import html
 import os
 import re
+import tempfile
+import threading
 import time
 from pathlib import Path
 
 import openvino_genai as ov_genai
 from PySide6.QtCore import QThread, Signal
+from app_version import APP_DATA_DIR
 
 
 class ProcessingCancelled(Exception):
@@ -372,22 +375,37 @@ class LLMProcessingWorker(QThread):
         self.prompt = prompt
         self.output_format = output_format
         self.processor = None
+        self._cancel_requested = threading.Event()
+        self._publication_lock = threading.RLock()
 
     def cancel(self):
-        if self.processor:
-            self.processor.cancel()
+        with self._publication_lock:
+            self._cancel_requested.set()
+            processor = self.processor
+        if processor is not None:
+            processor.cancel()
+
+    def _check_cancelled(self):
+        if self._cancel_requested.is_set():
+            if self.processor is not None:
+                self.processor.cancel()
+            raise ProcessingCancelled("Обработка остановлена пользователем")
 
     def run(self):
         try:
+            self._check_cancelled()
             transcript = Path(self.transcript_path).read_text(encoding="utf-8")
+            self._check_cancelled()
             cache_dir = (
                 Path(os.environ.get("LOCALAPPDATA", Path.home()))
-                / "WhisperGUI" / "llm_cache" / Path(self.model_path).name
+                / APP_DATA_DIR / "llm_cache" / Path(self.model_path).name
             )
             cache_dir.mkdir(parents=True, exist_ok=True)
+            self._check_cancelled()
             self.processor = LocalLLMProcessor(
                 self.model_path, "GPU", cache_dir=cache_dir
             )
+            self._check_cancelled()
             result = self.processor.process(
                 transcript,
                 self.prompt,
@@ -395,9 +413,9 @@ class LLMProcessingWorker(QThread):
                 progress=self.progress.emit,
                 partial=self.partial.emit,
             )
+            self._check_cancelled()
             output_path = self.make_output_path()
-            self.write_result(output_path, result, self.output_format)
-            self.completed.emit(output_path, result)
+            self._publish_result(output_path, result)
         except ProcessingCancelled as exc:
             self.log.emit(str(exc))
         except Exception as exc:
@@ -406,6 +424,25 @@ class LLMProcessingWorker(QThread):
             if self.processor:
                 self.processor.close()
             self.processor = None
+
+    def _publish_result(self, output_path, result):
+        self._check_cancelled()
+        destination = Path(output_path)
+        with tempfile.NamedTemporaryFile(
+            dir=destination.parent, prefix=f".{destination.name}.",
+            suffix=".tmp", delete=False,
+        ) as temporary:
+            staged = Path(temporary.name)
+        try:
+            self.write_result(staged, result, self.output_format)
+            # Cancellation and final publication have one ordering point. A
+            # cancel received while writing discards only the temporary file.
+            with self._publication_lock:
+                self._check_cancelled()
+                os.replace(staged, destination)
+                self.completed.emit(output_path, result)
+        finally:
+            staged.unlink(missing_ok=True)
 
     def make_output_path(self):
         source = Path(self.transcript_path)

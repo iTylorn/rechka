@@ -24,10 +24,12 @@ class Transcriber(QThread):
                  multi_mode=False, keep_extracted_audio=False,
                  language="ru", enable_diarization=False,
                  embed_model_path="", diar_threshold=0.74,
-                 num_speakers=0, max_auto_speakers=8, parent=None):
+                 num_speakers=0, max_auto_speakers=8, parent=None, *,
+                 fallback_model_path=""):
         super().__init__(parent)
         self.file_list = file_list
         self.model_path = model_path
+        self.fallback_model_path = fallback_model_path
         self.device = device
         self.chunk_minutes = chunk_minutes
         self.save_mode = save_mode
@@ -393,21 +395,33 @@ class Transcriber(QThread):
         return parts[0] * 60 + parts[1]
 
     def _load_whisper_pipeline(self):
-        """Load the selected model, falling back from int8 to sibling FP16."""
+        """Load on GPU, trying configured FP16 before the legacy sibling."""
         try:
             return ov_genai.WhisperPipeline(self.model_path, "GPU"), self.model_path
         except Exception as primary_error:
             model_path = Path(self.model_path)
             fallback_name = model_path.name.replace("-int8-ov", "-fp16-ov")
-            fallback_path = model_path.with_name(fallback_name)
-            if fallback_path != model_path and fallback_path.is_dir():
-                self.log.emit(f"Модель int8 не загрузилась: {primary_error}")
-                self.log.emit("Пробую резервную FP16-модель...")
+            candidates = []
+            if self.fallback_model_path:
+                candidates.append(Path(self.fallback_model_path))
+            candidates.append(model_path.with_name(fallback_name))
+            tried = {os.path.normcase(str(model_path.resolve()))}
+            fallback_errors = []
+            for fallback_path in candidates:
+                identity = os.path.normcase(str(fallback_path.resolve()))
+                if identity in tried or not fallback_path.is_dir():
+                    continue
+                tried.add(identity)
+                if not fallback_errors:
+                    self.log.emit(f"Основная модель не загрузилась: {primary_error}")
+                self.log.emit(f"Пробую резервную FP16-модель: {fallback_path}")
                 try:
                     return ov_genai.WhisperPipeline(str(fallback_path), "GPU"), str(fallback_path)
                 except Exception as fallback_error:
-                    raise RuntimeError(
-                        f"Не удалось загрузить int8 и FP16 модели на GPU. "
-                        f"int8: {primary_error}; FP16: {fallback_error}"
-                    ) from fallback_error
+                    fallback_errors.append(f"FP16 ({fallback_path}): {fallback_error}")
+            if fallback_errors:
+                raise RuntimeError(
+                    "Не удалось загрузить Whisper и резервные FP16-модели на GPU. "
+                    f"Основная: {primary_error}; " + "; ".join(fallback_errors)
+                ) from primary_error
             raise RuntimeError(f"Не удалось загрузить Whisper на GPU: {primary_error}") from primary_error

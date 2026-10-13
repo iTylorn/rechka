@@ -14,7 +14,7 @@ from PySide6.QtGui import QDragEnterEvent, QDropEvent
 from transcriber import Transcriber
 from settings import Settings
 from model_manager import ModelManager
-from model_installer import ModelInstallerDialog
+from model_installer import ModelInstallerDialog, MODEL_CATALOG, model_path_for
 from media_loader import MEDIA_EXTENSIONS, MediaLoader
 
 
@@ -236,6 +236,16 @@ class MainWindow(QMainWindow):
         self.run_files = []
         self.completed_transcripts = []
         self._offered_model_install = False
+        self._closing = False
+        self._model_installer = None
+        self._ai_dialog = None
+        self._auto_ai_path = None
+        self._model_offer_timer = QTimer(self)
+        self._model_offer_timer.setSingleShot(True)
+        self._model_offer_timer.timeout.connect(self.offer_missing_model_install)
+        self._auto_ai_timer = QTimer(self)
+        self._auto_ai_timer.setSingleShot(True)
+        self._auto_ai_timer.timeout.connect(self._run_auto_ai)
 
         from app_version import APP_VERSION
         self.setWindowTitle(f"WhisperGUI {APP_VERSION} — аудио и видео")
@@ -283,14 +293,14 @@ class MainWindow(QMainWindow):
         btn_refresh_models.clicked.connect(self.scan_models)
         btn_manual_model = QPushButton("Указать вручную")
         btn_manual_model.clicked.connect(self.manual_select_model)
-        btn_install_models = QPushButton("Скачать модели...")
-        btn_install_models.clicked.connect(self.open_model_installer)
+        self.install_models_btn = QPushButton("Модели и обновления...")
+        self.install_models_btn.clicked.connect(self.open_model_installer)
 
         model_row = QHBoxLayout()
         model_row.addWidget(self.model_combo, 1)
         model_row.addWidget(btn_refresh_models)
         model_row.addWidget(btn_manual_model)
-        model_row.addWidget(btn_install_models)
+        model_row.addWidget(self.install_models_btn)
 
         self.model_path_label = QLabel("Путь: не выбрана")
         model_layout.addLayout(model_row)
@@ -373,10 +383,14 @@ class MainWindow(QMainWindow):
         super().showEvent(event)
         if not self._offered_model_install:
             self._offered_model_install = True
-            QTimer.singleShot(350, self.offer_missing_model_install)
+            self._model_offer_timer.start(350)
 
     def offer_missing_model_install(self):
-        if self.model_combo.count() or not self.isVisible():
+        if self._closing or self.model_combo.count() or not self.isVisible():
+            return
+        if (self.transcriber is not None or self._model_installer is not None
+                or self._ai_dialog is not None or QApplication.activeModalWidget() is not None):
+            self._model_offer_timer.start(350)
             return
         answer = QMessageBox.question(
             self,
@@ -389,12 +403,23 @@ class MainWindow(QMainWindow):
         if answer == QMessageBox.Yes:
             self.open_model_installer(initial_selection=("whisper",))
 
-    def open_model_installer(self, initial_selection=("whisper",)):
+    def open_model_installer(self, initial_selection=()):
         # clicked(bool) from QPushButton is not a model-selection argument.
         if isinstance(initial_selection, bool):
-            initial_selection = ("whisper",)
+            initial_selection = ()
+        if (self._closing or self.transcriber is not None
+                or self._model_installer is not None or self._ai_dialog is not None):
+            return
         dialog = ModelInstallerDialog(self.settings, self, initial_selection)
-        dialog.exec()
+        self._model_installer = dialog
+        try:
+            dialog.exec()
+        finally:
+            self._model_installer = None
+            dialog.deleteLater()
+        if self._closing:
+            self.close()
+            return
         self.scan_models()
 
     # ---------- Обработчики событий ----------
@@ -442,13 +467,12 @@ class MainWindow(QMainWindow):
 
     def scan_models(self):
         models_folder = self.settings.get("models_folder", "")
-        if not models_folder or not os.path.isdir(models_folder):
-            self.model_combo.clear()
-            self.model_path_label.setText("Путь: папка моделей не найдена")
-            self.log("Папка моделей не найдена. Укажите путь в настройках.")
-            return
-
-        models = ModelManager.find_models(models_folder)
+        active = [str(model_path_for(self.settings, spec.key)) for spec in MODEL_CATALOG
+                  if spec.kind == "whisper" and model_path_for(self.settings, spec.key)]
+        models = list(dict.fromkeys(active + ModelManager.find_models(models_folder)))
+        last = self.settings.get("last_model", "")
+        if last and os.path.isdir(last) and last not in models:
+            models.insert(0, last)
         self.model_combo.clear()
         for model_path in models:
             model_name = ModelManager.get_model_name(model_path)
@@ -497,21 +521,45 @@ class MainWindow(QMainWindow):
     def open_ai_processing(self, auto_start=False):
         from ai_dialog import AIProcessingDialog
 
+        if (self._closing or self.transcriber is not None
+                or self._model_installer is not None or self._ai_dialog is not None):
+            return
         transcript_path = ""
         if self.last_saved_path and Path(self.last_saved_path).suffix.lower() in (".txt", ".md"):
             transcript_path = self.last_saved_path
         dialog = AIProcessingDialog(
             self.settings, transcript_path, self, auto_start=bool(auto_start)
         )
-        dialog.exec()
+        self._ai_dialog = dialog
+        try:
+            dialog.exec()
+        finally:
+            self._ai_dialog = None
+            dialog.deleteLater()
+        if self._closing:
+            self.close()
+
+    def _run_auto_ai(self):
+        if self._closing or not self.isVisible() or not self._auto_ai_path:
+            return
+        if (self.transcriber is not None or self._model_installer is not None
+                or self._ai_dialog is not None or QApplication.activeModalWidget() is not None):
+            self._auto_ai_timer.start(200)
+            return
+        self.last_saved_path = self._auto_ai_path
+        self._auto_ai_path = None
+        self.open_ai_processing(True)
 
     def start_transcription(self):
+        if (self._closing or self.transcriber is not None
+                or self._model_installer is not None or self._ai_dialog is not None):
+            return
         if len(self.current_files) == 0:
             QMessageBox.warning(self, "Предупреждение", "Выберите хотя бы один аудиофайл.")
             return
         if self.model_combo.count() == 0:
             self.open_model_installer(initial_selection=("whisper",))
-            if self.model_combo.count() == 0:
+            if self._closing or self.model_combo.count() == 0:
                 return
 
         model_path = self.model_combo.currentData()
@@ -552,7 +600,8 @@ class MainWindow(QMainWindow):
             embed_model_path=embed_model_path,
             diar_threshold=diar_threshold,
             num_speakers=num_speakers,
-            max_auto_speakers=max_auto_speakers
+            max_auto_speakers=max_auto_speakers,
+            fallback_model_path=str(model_path_for(self.settings, "whisper_fp16") or ""),
         )
         self.transcriber.log.connect(self.log)
         self.transcriber.progress.connect(self.update_progress)
@@ -579,6 +628,7 @@ class MainWindow(QMainWindow):
         self.settings_btn.setEnabled(enabled)
         self.ai_btn.setEnabled(enabled)
         self.rename_speakers_btn.setEnabled(enabled)
+        self.install_models_btn.setEnabled(enabled)
 
     @Slot(str)
     def log(self, message):
@@ -617,10 +667,19 @@ class MainWindow(QMainWindow):
     @Slot(str)
     def on_transcription_error(self, error_message):
         self.log_text.append(f"\nОШИБКА: {error_message}")
-        QMessageBox.critical(self, "Ошибка", error_message)
+        if not self._closing:
+            QMessageBox.critical(self, "Ошибка", error_message)
 
     @Slot()
     def on_thread_finished(self):
+        worker = self.transcriber
+        self.transcriber = None
+        if worker is not None:
+            worker.deleteLater()
+        if self._closing:
+            self.pending_ai_path = None
+            self.close()
+            return
         self.set_controls_enabled(True)
         self.stop_btn.setEnabled(False)
         self.progress_bar.setValue(100)
@@ -638,9 +697,9 @@ class MainWindow(QMainWindow):
                 for transcript_path, media_path in self.completed_transcripts:
                     self.show_speaker_rename_dialog(transcript_path, media_path)
         if self.pending_ai_path and self.settings.get("auto_ai_processing", False):
-            self.last_saved_path = self.pending_ai_path
+            self._auto_ai_path = self.pending_ai_path
             self.pending_ai_path = None
-            QTimer.singleShot(200, lambda: self.open_ai_processing(True))
+            self._auto_ai_timer.start(200)
         else:
             self.pending_ai_path = None
 
@@ -701,6 +760,29 @@ class MainWindow(QMainWindow):
                     os.system(f'open "{folder}"')
                 else:
                     os.system(f'xdg-open "{folder}"')
+
+    def closeEvent(self, event):
+        first_request = not self._closing
+        self._closing = True
+        self._model_offer_timer.stop()
+        self._auto_ai_timer.stop()
+        self._auto_ai_path = None
+        if self.transcriber is not None:
+            # Keep the worker alive through delivery of its finished signal.
+            # Native GPU calls cannot safely be interrupted by destroying QThread.
+            self.transcriber.cancel()
+            self.set_controls_enabled(False)
+            self.stop_btn.setEnabled(False)
+            if first_request:
+                self.log("Останавливаю обработку перед закрытием окна…")
+            event.ignore()
+            return
+        child = self._ai_dialog or self._model_installer
+        if child is not None:
+            child.close()
+            event.ignore()
+            return
+        super().closeEvent(event)
 
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():

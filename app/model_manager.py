@@ -1,4 +1,5 @@
 import os
+import json
 from pathlib import Path
 
 class ModelManager:
@@ -14,6 +15,7 @@ class ModelManager:
             return models
 
         for root, dirs, files in os.walk(models_folder):
+            dirs[:] = [name for name in dirs if name not in {"_versions", "_downloads", "__pycache__"}]
             has_xml = any(f.endswith('.xml') for f in files)
             has_bin = any(f.endswith('.bin') for f in files)
             has_openvino_model = 'openvino_model.xml' in files
@@ -34,4 +36,13 @@ class ModelManager:
 
     @staticmethod
     def get_model_name(model_path):
+        marker = Path(model_path) / "_whispergui_manifest.json"
+        try:
+            info = json.loads(marker.read_text(encoding="utf-8"))
+            repo = info.get("repository", "")
+            revision = info.get("revision", "")
+            if repo:
+                return repo.rsplit("/", 1)[-1] + (f" · {revision[:8]}" if revision else "")
+        except (OSError, ValueError, TypeError):
+            pass
         return os.path.basename(model_path.rstrip(os.sep))

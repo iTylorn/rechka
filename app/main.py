@@ -4,11 +4,11 @@ import sys
 import traceback
 from pathlib import Path
 
-from app_version import APP_VERSION
+from app_version import APP_VERSION, APP_DATA_DIR
 
 
 def _write_startup_error(smoke_test):
-    base_dir = Path(os.environ.get("LOCALAPPDATA", Path.home())) / "WhisperGUI"
+    base_dir = Path(os.environ.get("LOCALAPPDATA", Path.home())) / APP_DATA_DIR
     error_path = base_dir / "startup_error.log"
     details = traceback.format_exc()
     try:
@@ -29,7 +29,21 @@ def main():
     smoke_test = "--smoke-test" in sys.argv
     gpu_smoke_test = "--gpu-smoke-test" in sys.argv
     llm_smoke_test = "--llm-smoke-test" in sys.argv
+    update_smoke_test = "--model-update-smoke-test" in sys.argv
     try:
+        if update_smoke_test:
+            import json
+            from model_updates import MODEL_CATALOG, check_update, install_model
+            index = sys.argv.index("--model-update-smoke-test")
+            output = Path(sys.argv[index + 1]).resolve()
+            spec = next(item for item in MODEL_CATALOG if item.kind == "wespeaker")
+            checked = check_update(spec)
+            installed = install_model(spec, output, plan=checked.plan)
+            (output / "smoke_result.json").write_text(
+                json.dumps({"model": spec.key, "path": str(installed), "status": "ok"}),
+                encoding="utf-8",
+            )
+            return 0
         if gpu_smoke_test:
             from openvino_genai import WhisperPipeline
             from openvino import Core
@@ -42,9 +56,13 @@ def main():
             core = Core()
             if "GPU" not in core.available_devices:
                 raise RuntimeError("OpenVINO не видит GPU")
-            model = core.read_model(str(DEFAULT_EMBEDDING_MODEL))
+            settings = Settings()
+            model = core.read_model(str(settings.get("embed_model_path", DEFAULT_EMBEDDING_MODEL)))
             core.compile_model(model, "GPU")
-            whisper_models = ModelManager.find_models(Settings().get("models_folder", ""))
+            whisper_models = ModelManager.find_models(settings.get("models_folder", ""))
+            selected = settings.get("last_model", "")
+            if selected and Path(selected).is_dir():
+                whisper_models = [selected]
             if whisper_models:
                 pipeline = WhisperPipeline(whisper_models[0], "GPU")
                 del pipeline
@@ -77,7 +95,7 @@ def main():
         window.show()
         return app.exec()
     except Exception:
-        _write_startup_error(smoke_test or gpu_smoke_test or llm_smoke_test)
+        _write_startup_error(smoke_test or gpu_smoke_test or llm_smoke_test or update_smoke_test)
         return 1
 
 if __name__ == "__main__":

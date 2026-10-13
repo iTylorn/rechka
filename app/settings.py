@@ -1,13 +1,17 @@
 import json
 import os
 import sys
+import copy
+import shutil
 from pathlib import Path
+
+from app_version import APP_CHANNEL, APP_DATA_DIR
 
 
 def _model_store_folder():
     local_app_data = os.environ.get("LOCALAPPDATA")
     base = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
-    return base / "WhisperGUI" / "models"
+    return base / APP_DATA_DIR / "models"
 
 
 def _find_project_root():
@@ -87,20 +91,29 @@ DEFAULT_SETTINGS = {
     "max_auto_speakers": 8,
     "prompt_speaker_names": True,
     "speaker_names": [],
-    "settings_version": 7
+    "model_paths": {},
+    "model_previous_paths": {},
+    "settings_version": 8
 }
 
 class Settings:
     def __init__(self):
-        self.config_dir = Path(os.environ.get("APPDATA", Path.home())) / "WhisperGUI"
+        self.config_dir = Path(os.environ.get("APPDATA", Path.home())) / APP_DATA_DIR
         self.config_file = self.config_dir / "settings.json"
-        self.data = DEFAULT_SETTINGS.copy()
+        self.data = copy.deepcopy(DEFAULT_SETTINGS)
         self.load()
 
     def load(self):
-        if self.config_file.exists():
+        source = self.config_file
+        import_stable = False
+        if not source.exists() and APP_CHANNEL == "beta":
+            legacy = self.config_dir.parent / "WhisperGUI" / "settings.json"
+            if legacy.is_file():
+                source = legacy
+                import_stable = True
+        if source.exists():
             try:
-                with open(self.config_file, "r", encoding="utf-8") as f:
+                with open(source, "r", encoding="utf-8") as f:
                     user_data = json.load(f)
                 self.data.update(user_data)
                 if int(user_data.get("settings_version", 1)) < 2:
@@ -128,6 +141,11 @@ class Settings:
                 if int(user_data.get("settings_version", 1)) < 7:
                     self.data["model_store_folder"] = str(MODEL_STORE_FOLDER)
                     self.data["settings_version"] = 7
+                if import_stable:
+                    self.data["model_store_folder"] = str(MODEL_STORE_FOLDER)
+                    self.data["model_paths"] = {}
+                    self.data["model_previous_paths"] = {}
+                self.data["settings_version"] = 8
             except Exception as e:
                 print(f"Ошибка загрузки настроек: {e}")
         # Migrate stale paths from the former C:\Whisper installation.
@@ -145,11 +163,22 @@ class Settings:
                 Path(self.data["llm_models_folder"]) / "Qwen3-8B-int4-ov"
             )
         self.data["device"] = "GPU"
+        for key in ("model_paths", "model_previous_paths"):
+            if not isinstance(self.data.get(key), dict):
+                self.data[key] = {}
+        if import_stable:
+            self.save()
+            source_prompts = source.parent / "prompts.json"
+            target_prompts = self.config_dir / "prompts.json"
+            if source_prompts.is_file() and not target_prompts.exists():
+                shutil.copy2(source_prompts, target_prompts)
 
     def save(self):
         self.config_dir.mkdir(parents=True, exist_ok=True)
-        with open(self.config_file, "w", encoding="utf-8") as f:
+        temporary = self.config_file.with_suffix(".json.tmp")
+        with open(temporary, "w", encoding="utf-8") as f:
             json.dump(self.data, f, indent=4, ensure_ascii=False)
+        os.replace(temporary, self.config_file)
 
     def get(self, key, default=None):
         return self.data.get(key, default)
@@ -157,3 +186,12 @@ class Settings:
     def set(self, key, value):
         self.data[key] = value
         self.save()
+
+    def update(self, values):
+        previous = copy.deepcopy(self.data)
+        self.data.update(values)
+        try:
+            self.save()
+        except Exception:
+            self.data = previous
+            raise
