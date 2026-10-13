@@ -1,14 +1,63 @@
+# Local data, downloaded weights and distributable artifacts stay on this PC.
+/local-data/
+/turbo-gpu/
+/llm-models/
+/WhisperGUI_Releases/
+/releases/
+
+# Retired folders are not a second source of truth.
+/WhisperGUI_Development/
+/WhisperGUI_Diarization/
+/WhisperGUI_Distributable/
+/WhisperGUI_Source_*/
+/_diagnostics_model_research/
+
+# Only the compact, required WeSpeaker IR is versioned here.
+/diarization/*
+!/diarization/wespeaker_fixed.xml
+!/diarization/wespeaker_fixed.bin
+
+# Python environments, generated output and caches.
 **/__pycache__/
 *.py[cod]
 **/.venv/
+**/venv/
 **/build/
 **/dist/
-*.partial
-*.log
-turbo-gpu/
-llm-models/
-.test-data/
-.pytest_cache/
-releases/
+**/.test-data/
+**/.pytest_cache/
 **/_downloads/
 **/llm_cache/
+*.partial
+*.log
+*.tmp
+
+# Credentials and machine-local preferences.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+**/settings.json
+**/prompts.json
+.idea/
+.vscode/
+Thumbs.db
+Desktop.ini
+
+# Personal recordings, documents and old archives accidentally put at the root.
+/*.wav
+/*.mp3
+/*.m4a
+/*.flac
+/*.ogg
+/*.mp4
+/*.avi
+/*.webm
+/*.mkv
+/*.docx
+/*.pdf
+/*.zip
+/*.7z
+/*_transcript*.txt
+/*_transcript*.md
