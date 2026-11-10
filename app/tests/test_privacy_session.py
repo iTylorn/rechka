@@ -90,3 +90,11 @@ class PrivacySessionTests(unittest.TestCase):
         findings = [Finding('Иван', replacement='[Участник 1]', entity='иван'),
                     Finding('Ивану', replacement='[Участник 1]', entity='иван')]
         self.assertEqual(session.render(findings)[0], ['[Участник 1] позвонил [Участник 1].'])
+
+    def test_explicit_occurrence_decision_is_not_silently_overridden_by_full_name(self):
+        session = self.session('Иван Петров пришёл.')
+        span = session.occurrences('Иван')[0]
+        session.overrides[(span.start, span.end)] = None
+        with self.assertRaises(PrivacyError):
+            session.render([Finding('Иван Петров', replacement='[Участник 1]'),
+                            Finding('Иван', replacement='[Участник 1]')])

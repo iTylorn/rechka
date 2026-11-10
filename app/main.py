@@ -30,7 +30,13 @@ def main():
     gpu_smoke_test = "--gpu-smoke-test" in sys.argv
     llm_smoke_test = "--llm-smoke-test" in sys.argv
     update_smoke_test = "--model-update-smoke-test" in sys.argv
+    privacy_smoke_test = '--privacy-smoke-test' in sys.argv
     try:
+        if privacy_smoke_test:
+            from privacy_validation import run_validation
+            index = sys.argv.index('--privacy-smoke-test')
+            run_validation(sys.argv[index + 1], sys.argv[index + 2])
+            return 0
         if update_smoke_test:
             import json
             from model_updates import MODEL_CATALOG, check_update, install_model
@@ -80,22 +86,28 @@ def main():
             return 0
 
         from PySide6.QtWidgets import QApplication
+        from PySide6.QtGui import QFont
         from main_window import MainWindow
 
         app = QApplication(sys.argv)
+        if os.name == 'nt':
+            app.setFont(QFont('Segoe UI', 9))
         app.setApplicationName("WhisperGUI")
         app.setApplicationVersion(APP_VERSION)
         window = MainWindow()
         if smoke_test:
             # Import and construct the complete GUI, then return without entering
             # the interactive event loop. This is used to validate packaged builds.
+            from privacy_dialog import PrivacyDialog
+            privacy = PrivacyDialog(window.settings, parent=window)
             app.processEvents()
+            privacy.close()
             window.close()
             return 0
         window.show()
         return app.exec()
     except Exception:
-        _write_startup_error(smoke_test or gpu_smoke_test or llm_smoke_test or update_smoke_test)
+        _write_startup_error(smoke_test or gpu_smoke_test or llm_smoke_test or update_smoke_test or privacy_smoke_test)
         return 1
 
 if __name__ == "__main__":

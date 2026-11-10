@@ -82,6 +82,7 @@ DEFAULT_SETTINGS = {
     "last_prompt_id": "meeting_protocol",
     "ai_output_format": "md",
     "auto_ai_processing": False,
+    "anonymize_before_ai": False,
     "language": "ru",
     "task": "transcribe",
     "enable_diarization": True,

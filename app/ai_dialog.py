@@ -22,6 +22,14 @@ class AIProcessingDialog(QDialog):
         self._closing = False
         self._close_result = QDialog.Rejected
         self._model_installer = None
+        self._privacy_dialog = None
+        self._privacy_active = False
+        self._draft_pending = None
+        self._discard_draft = False
+        self._approved_aliases = []
+        self._approved_findings = []
+        self._approved_source_session = None
+        self._privacy_output_format = 'md'
         self._starting = False
         self._auto_start_pending = bool(auto_start)
         self._auto_start_timer = QTimer(self)
@@ -155,6 +163,10 @@ class AIProcessingDialog(QDialog):
         controls.addWidget(self.stop_button)
         controls.addWidget(self.open_folder_button)
         layout.addLayout(controls)
+        self.privacy_checkbox = QCheckBox('Обезличить перед обработкой и проверить готовый протокол')
+        self.privacy_checkbox.setChecked(bool(settings.get('anonymize_before_ai', False)))
+        self.privacy_checkbox.toggled.connect(lambda checked: settings.set('anonymize_before_ai', checked))
+        layout.addWidget(self.privacy_checkbox)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
@@ -292,7 +304,8 @@ class AIProcessingDialog(QDialog):
 
     def start_processing(self):
         if (self._closing or self.worker is not None
-                or self._model_installer is not None or self._starting):
+                or self._model_installer is not None or self._starting
+                or self._draft_pending is not None or self._privacy_dialog is not None):
             return
         self._auto_start_pending = False
         self._auto_start_timer.stop()
@@ -301,6 +314,8 @@ class AIProcessingDialog(QDialog):
             self._start_processing()
         finally:
             self._starting = False
+            if self._closing:
+                self._request_close(self._close_result)
 
     def _start_processing(self):
         model_path = self.model_edit.text().strip()
@@ -319,6 +334,40 @@ class AIProcessingDialog(QDialog):
         if not prompt.get("user_prompt"):
             QMessageBox.warning(self, "Пустой промпт", "Введите пользовательский промпт.")
             return
+        source_text = None
+        self._privacy_active = self.privacy_checkbox.isChecked()
+        self._draft_pending = None
+        self._discard_draft = False
+        self._approved_source_session = None
+        self._privacy_output_format = self.format_combo.currentData()
+        if self._privacy_active:
+            from privacy_dialog import PrivacyDialog
+            dialog = PrivacyDialog(self.settings, transcript_path, self, continue_mode=True)
+            dialog.model_edit.setText(model_path)
+            self._privacy_dialog = dialog
+            try:
+                accepted = dialog.exec() == QDialog.Accepted
+                if not accepted or self._closing:
+                    return
+                source_text = '\n\n'.join(dialog.approved_texts)
+                if not source_text.strip():
+                    return
+                self._approved_aliases = list(dialog.approved_aliases)
+                self._approved_findings = list(dialog.approved_findings)
+                self._approved_source_session = dialog.session
+                self._approved_source_session.assert_current()
+                self._approved_source_session.save_batch(Path(transcript_path).parent, dialog.approved_texts)
+            except ValueError:
+                QMessageBox.warning(self, 'Повторите проверку', 'Исходный файл изменён. Повторите обезличивание.')
+                return
+            except OSError:
+                QMessageBox.warning(self, 'Копии не сохранены',
+                                    'Не удалось сохранить обезличенные копии рядом с исходником. '
+                                    'Проверьте доступ к папке; обработка остановлена.')
+                return
+            finally:
+                self._privacy_dialog = None
+                dialog.deleteLater()
         self.settings.set("llm_model_path", model_path)
         self.settings.set("last_transcript_path", transcript_path)
         self.settings.set("last_prompt_id", prompt.get("id", ""))
@@ -326,13 +375,13 @@ class AIProcessingDialog(QDialog):
         self.output_edit.clear()
         self.progress_bar.setValue(0)
         self.set_running(True)
-        self.worker = LLMProcessingWorker(
-            model_path,
-            transcript_path,
-            prompt,
-            self.format_combo.currentData(),
-            self,
-        )
+        if self._privacy_active:
+            self.worker = LLMProcessingWorker(model_path, transcript_path, prompt,
+                                              self._privacy_output_format, self,
+                                              source_text=source_text, publish=False)
+        else:
+            self.worker = LLMProcessingWorker(model_path, transcript_path, prompt,
+                                              self.format_combo.currentData(), self)
         self.worker.log.connect(self.append_log)
         self.worker.progress.connect(self.update_progress)
         self.worker.partial.connect(self.output_edit.setPlainText)
@@ -351,9 +400,13 @@ class AIProcessingDialog(QDialog):
             self._request_close(self._close_result)
         else:
             self.set_running(False)
+            if self._draft_pending is not None:
+                QTimer.singleShot(0, self._review_protocol)
 
     def stop_processing(self):
-        if self.worker and self.worker.isRunning():
+        if self.worker is not None:
+            self._discard_draft = True
+            self._draft_pending = None
             self.worker.cancel()
             self.append_log("Остановка после текущего шага...")
 
@@ -362,6 +415,10 @@ class AIProcessingDialog(QDialog):
         self.stop_button.setEnabled(running)
         self.prompt_combo.setEnabled(not running)
         self.install_model_button.setEnabled(not running)
+        for widget in (self.privacy_checkbox, self.transcript_edit, self.model_edit,
+                       self.model_preset_combo, self.format_combo, self.system_edit,
+                       self.user_edit, self.tokens_spin, self.temperature_spin):
+            widget.setEnabled(not running)
 
     @Slot(str)
     def append_log(self, message):
@@ -374,12 +431,79 @@ class AIProcessingDialog(QDialog):
 
     @Slot(str, str)
     def processing_completed(self, path, result):
+        if self._closing or self._discard_draft:
+            return
+        if self._privacy_active:
+            self._draft_pending = result
+            self.output_edit.setPlainText(result)
+            self.progress_bar.setFormat('Черновик в памяти — требуется проверка перед сохранением')
+            return
         self.last_output_path = path
         self.output_edit.setPlainText(result)
         self.open_folder_button.setEnabled(True)
         self.progress_bar.setValue(100)
         if not self._closing:
             QMessageBox.information(self, "Готово", f"Результат сохранён:\n{path}")
+
+    def _review_protocol(self):
+        if self._closing or self._draft_pending is None or self.worker is not None:
+            return
+        modal = QApplication.activeModalWidget()
+        if self._model_installer is not None or self._starting or (modal is not None and modal is not self):
+            QTimer.singleShot(200, self._review_protocol)
+            return
+        from privacy_dialog import PrivacyDialog
+        from transcript_privacy import save_result
+        draft, self._draft_pending = self._draft_pending, None
+        self.set_running(True)
+        dialog = PrivacyDialog(self.settings, parent=self, continue_mode=True, source_text=draft,
+                               known_aliases=self._approved_aliases, seed_findings=self._approved_findings)
+        self._privacy_dialog = dialog
+        dialog.model_edit.setText(self.model_edit.text())
+        try:
+            if dialog.exec() != QDialog.Accepted or self._closing:
+                self.append_log('Проверка протокола не подтверждена. Файл не сохранён.')
+                return
+            if self._approved_source_session is not None:
+                self._approved_source_session.assert_current()
+            result = '\n\n'.join(dialog.approved_texts)
+            output_format = self._privacy_output_format
+            path, _ = QFileDialog.getSaveFileName(
+                self, 'Сохранить проверенный протокол', f'Протокол_обезличено.{output_format}',
+                f'Протокол (*.{output_format})')
+            if not path:
+                return
+            destination = Path(path)
+            if not destination.suffix:
+                destination = destination.with_suffix('.' + output_format)
+            if destination.suffix.lower() != '.' + output_format:
+                raise ValueError('Выберите расширение выбранного формата.')
+            if self._approved_source_session is not None:
+                self._approved_source_session.assert_current()
+            # HTML is rendered as escaped text in a clean document, never copied.
+            if output_format == 'html':
+                import html
+                result_file = ('<!doctype html><html lang="ru"><meta charset="utf-8">'
+                               '<body><pre style="white-space:pre-wrap">' + html.escape(result) + '</pre></body></html>')
+                # The publication primitive accepts text extensions. Use a dedicated
+                # no-clobber helper rather than changing the selected file's suffix.
+                from privacy_session import publish_document
+                publish_document(destination, result_file)
+            else:
+                save_result(destination, result, self.transcript_edit.text(), [])
+            self.last_output_path = str(destination)
+            self.output_edit.setPlainText(result)
+            self.open_folder_button.setEnabled(True)
+            self.progress_bar.setFormat('Проверенный протокол сохранён')
+        except (ValueError, OSError):
+            QMessageBox.warning(self, 'Протокол не сохранён',
+                                'Проверьте, что исходник не изменился, и выберите новое имя в доступной папке.')
+        finally:
+            self._privacy_dialog = None
+            dialog.deleteLater()
+            self.set_running(False)
+            if self._closing:
+                self._request_close(self._close_result)
 
     @Slot(str)
     def processing_error(self, message):
@@ -398,6 +522,10 @@ class AIProcessingDialog(QDialog):
             self._close_result = result
         self._auto_start_pending = False
         self._auto_start_timer.stop()
+        self._draft_pending = None
+        if self._privacy_dialog is not None:
+            self._privacy_dialog.close()
+            return False
         if self.worker is not None:
             self.worker.cancel()
             self.stop_button.setEnabled(False)

@@ -94,6 +94,14 @@ class PrivacySession:
                     if any(matches(value, other.original) for other in active):
                         raise PrivacyError('Замена содержит выбранное чувствительное значение.')
                 proposals.setdefault(span, value)
+        for (start, end), decision in self.overrides.items():
+            if (start, end) not in proposals:
+                continue
+            for (other_start, other_end), other_decision in proposals.items():
+                if (start, end) != (other_start, other_end) and start < other_end and end > other_start:
+                    if decision != other_decision:
+                        raise PrivacyError('Индивидуальное решение пересекается с другой заменой. '
+                                           'Уточните вхождения или отключите пересекающуюся строку.')
         outputs, scanned = [], []
         for index, source in enumerate(self.sources):
             base = self.offsets[index]

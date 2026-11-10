@@ -82,6 +82,7 @@ class WorkerLifecycleTests(unittest.TestCase):
                 widget.transcriber = None
                 widget._model_installer = None
                 widget._ai_dialog = None
+                widget._privacy_dialog = None
             else:
                 widget.worker = None
                 widget._model_installer = None
@@ -130,6 +131,23 @@ class WorkerLifecycleTests(unittest.TestCase):
                     self.assertTrue(worker.deleted)
                     self.assertIsNone(window.pending_ai_path)
                     open_ai.assert_not_called()
+
+    def test_privacy_dialog_excludes_other_gpu_operations(self):
+        window = self.main_window()
+        child = QDialog(window)
+        window._privacy_dialog = child
+        with patch("ai_dialog.AIProcessingDialog") as ai, \
+                patch("privacy_dialog.PrivacyDialog") as privacy, \
+                patch("main_window.ModelInstallerDialog") as installer, \
+                patch("main_window.Transcriber") as transcriber:
+            window.open_ai_processing()
+            window.open_privacy()
+            window.open_model_installer()
+            window.start_transcription()
+        for factory in (ai, privacy, installer, transcriber):
+            factory.assert_not_called()
+        window._privacy_dialog = None
+        child.deleteLater()
 
     def test_ai_all_exit_routes_wait_for_worker_finished(self):
         for action in ("reject", "accept", "done", "close"):

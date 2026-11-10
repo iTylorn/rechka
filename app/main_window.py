@@ -169,6 +169,9 @@ class SettingsDialog(QDialog):
         layout.addWidget(diar_group)
 
         # --- Кнопки OK/Cancel ---
+        self.privacy_before_ai = QCheckBox('Обезличивать перед составлением протокола')
+        self.privacy_before_ai.setChecked(bool(self.settings.get('anonymize_before_ai', False)))
+        layout.addWidget(self.privacy_before_ai)
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
@@ -190,6 +193,7 @@ class SettingsDialog(QDialog):
             line_edit.setText(file_path)
 
     def accept(self):
+        self.settings.set('anonymize_before_ai', self.privacy_before_ai.isChecked())
         self.settings.set("models_folder", self.models_folder_edit.text())
         self.settings.set("device", self.device_combo.currentText())
         self.settings.set("chunk_minutes", self.chunk_spin.value())
@@ -239,6 +243,7 @@ class MainWindow(QMainWindow):
         self._closing = False
         self._model_installer = None
         self._ai_dialog = None
+        self._privacy_dialog = None
         self._auto_ai_path = None
         self._model_offer_timer = QTimer(self)
         self._model_offer_timer.setSingleShot(True)
@@ -354,16 +359,21 @@ class MainWindow(QMainWindow):
         self.settings_btn.clicked.connect(self.open_settings)
         self.ai_btn = QPushButton("Обработать текст ИИ")
         self.ai_btn.clicked.connect(self.open_ai_processing)
+        self.privacy_btn = QPushButton("Обезличить тексты…")
+        self.privacy_btn.clicked.connect(self.open_privacy)
         self.rename_speakers_btn = QPushButton("Имена спикеров...")
         self.rename_speakers_btn.clicked.connect(self.rename_last_transcript)
 
         control_layout.addWidget(self.start_btn)
         control_layout.addWidget(self.stop_btn)
         control_layout.addWidget(self.open_folder_btn)
-        control_layout.addWidget(self.rename_speakers_btn)
-        control_layout.addWidget(self.ai_btn)
         control_layout.addWidget(self.settings_btn)
         main_layout.addLayout(control_layout)
+        transcript_controls = QHBoxLayout()
+        transcript_controls.addWidget(self.rename_speakers_btn)
+        transcript_controls.addWidget(self.privacy_btn)
+        transcript_controls.addWidget(self.ai_btn)
+        main_layout.addLayout(transcript_controls)
 
         # --- Прогресс ---
         self.progress_bar = QProgressBar()
@@ -389,7 +399,8 @@ class MainWindow(QMainWindow):
         if self._closing or self.model_combo.count() or not self.isVisible():
             return
         if (self.transcriber is not None or self._model_installer is not None
-                or self._ai_dialog is not None or QApplication.activeModalWidget() is not None):
+                or self._ai_dialog is not None or self._privacy_dialog is not None
+                or QApplication.activeModalWidget() is not None):
             self._model_offer_timer.start(350)
             return
         answer = QMessageBox.question(
@@ -408,7 +419,8 @@ class MainWindow(QMainWindow):
         if isinstance(initial_selection, bool):
             initial_selection = ()
         if (self._closing or self.transcriber is not None
-                or self._model_installer is not None or self._ai_dialog is not None):
+                or self._model_installer is not None or self._ai_dialog is not None
+                or self._privacy_dialog is not None):
             return
         dialog = ModelInstallerDialog(self.settings, self, initial_selection)
         self._model_installer = dialog
@@ -522,7 +534,8 @@ class MainWindow(QMainWindow):
         from ai_dialog import AIProcessingDialog
 
         if (self._closing or self.transcriber is not None
-                or self._model_installer is not None or self._ai_dialog is not None):
+                or self._model_installer is not None or self._ai_dialog is not None
+                or self._privacy_dialog is not None):
             return
         transcript_path = ""
         if self.last_saved_path and Path(self.last_saved_path).suffix.lower() in (".txt", ".md"):
@@ -539,11 +552,32 @@ class MainWindow(QMainWindow):
         if self._closing:
             self.close()
 
+    def open_privacy(self):
+        from privacy_dialog import PrivacyDialog
+
+        if (self._closing or self.transcriber is not None
+                or self._model_installer is not None or self._ai_dialog is not None
+                or self._privacy_dialog is not None):
+            return
+        dialog = PrivacyDialog(
+            self.settings, self.last_saved_path or "", self,
+            transcripts=[path for path, _ in self.completed_transcripts],
+        )
+        self._privacy_dialog = dialog
+        try:
+            dialog.exec()
+        finally:
+            self._privacy_dialog = None
+            dialog.deleteLater()
+        if self._closing:
+            self.close()
+
     def _run_auto_ai(self):
         if self._closing or not self.isVisible() or not self._auto_ai_path:
             return
         if (self.transcriber is not None or self._model_installer is not None
-                or self._ai_dialog is not None or QApplication.activeModalWidget() is not None):
+                or self._ai_dialog is not None or self._privacy_dialog is not None
+                or QApplication.activeModalWidget() is not None):
             self._auto_ai_timer.start(200)
             return
         self.last_saved_path = self._auto_ai_path
@@ -552,7 +586,8 @@ class MainWindow(QMainWindow):
 
     def start_transcription(self):
         if (self._closing or self.transcriber is not None
-                or self._model_installer is not None or self._ai_dialog is not None):
+                or self._model_installer is not None or self._ai_dialog is not None
+                or self._privacy_dialog is not None):
             return
         if len(self.current_files) == 0:
             QMessageBox.warning(self, "Предупреждение", "Выберите хотя бы один аудиофайл.")
@@ -627,6 +662,7 @@ class MainWindow(QMainWindow):
         self.chunk_spin.setEnabled(enabled)
         self.settings_btn.setEnabled(enabled)
         self.ai_btn.setEnabled(enabled)
+        self.privacy_btn.setEnabled(enabled)
         self.rename_speakers_btn.setEnabled(enabled)
         self.install_models_btn.setEnabled(enabled)
 
@@ -777,7 +813,7 @@ class MainWindow(QMainWindow):
                 self.log("Останавливаю обработку перед закрытием окна…")
             event.ignore()
             return
-        child = self._ai_dialog or self._model_installer
+        child = self._privacy_dialog or self._ai_dialog or self._model_installer
         if child is not None:
             child.close()
             event.ignore()
