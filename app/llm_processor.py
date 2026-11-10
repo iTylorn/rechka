@@ -299,6 +299,13 @@ class LocalLLMProcessor:
         )
         return self._generate(system_prompt, instruction, 1200, 0.0, None)
 
+    def generate_text(self, system_prompt, user_prompt, max_new_tokens=3000):
+        """Structured extraction without transcript rewriting or file publication."""
+        self._check_cancelled()
+        if self.pipe is None:
+            self.load()
+        return self._generate(system_prompt, user_prompt, max_new_tokens, 0.0, None)
+
     def _generate(self, system_prompt, user_prompt, max_new_tokens, temperature, partial):
         self._check_cancelled()
         history = [
@@ -368,12 +375,15 @@ class LLMProcessingWorker(QThread):
     completed = Signal(str, str)
     error = Signal(str)
 
-    def __init__(self, model_path, transcript_path, prompt, output_format="md", parent=None):
+    def __init__(self, model_path, transcript_path, prompt, output_format="md", parent=None,
+                 source_text=None, publish=True):
         super().__init__(parent)
         self.model_path = model_path
         self.transcript_path = transcript_path
         self.prompt = prompt
         self.output_format = output_format
+        self.source_text = source_text
+        self.publish = publish
         self.processor = None
         self._cancel_requested = threading.Event()
         self._publication_lock = threading.RLock()
@@ -394,7 +404,8 @@ class LLMProcessingWorker(QThread):
     def run(self):
         try:
             self._check_cancelled()
-            transcript = Path(self.transcript_path).read_text(encoding="utf-8")
+            transcript = (self.source_text if self.source_text is not None else
+                          Path(self.transcript_path).read_text(encoding="utf-8-sig"))
             self._check_cancelled()
             cache_dir = (
                 Path(os.environ.get("LOCALAPPDATA", Path.home()))
@@ -414,12 +425,18 @@ class LLMProcessingWorker(QThread):
                 partial=self.partial.emit,
             )
             self._check_cancelled()
-            output_path = self.make_output_path()
-            self._publish_result(output_path, result)
+            if self.publish:
+                output_path = self.make_output_path()
+                self._publish_result(output_path, result)
+            else:
+                with self._publication_lock:
+                    self._check_cancelled()
+                    self.completed.emit('', result)
         except ProcessingCancelled as exc:
             self.log.emit(str(exc))
         except Exception as exc:
-            self.error.emit(str(exc))
+            self.error.emit(str(exc) if self.publish else
+                            'Не удалось создать локальный черновик. Проверьте модель и Intel GPU.')
         finally:
             if self.processor:
                 self.processor.close()
