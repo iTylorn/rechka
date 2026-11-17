@@ -45,6 +45,11 @@ if ($gpuSmoke.ExitCode -ne 0) {
     throw "Packaged OpenVINO GPU/FFmpeg test failed with exit code $($gpuSmoke.ExitCode)"
 }
 
+$mediaSmoke = Start-Process -FilePath $executable -ArgumentList "--media-smoke-test" -WindowStyle Hidden -Wait -PassThru
+if ($mediaSmoke.ExitCode -ne 0) {
+    throw "Packaged AAC/ALAC M4A test failed with exit code $($mediaSmoke.ExitCode)"
+}
+
 $localQwen = Join-Path (Split-Path $PSScriptRoot -Parent) "llm-models\Qwen3-8B-int4-ov"
 if (Test-Path -LiteralPath (Join-Path $localQwen "openvino_model.xml")) {
     $quotedModelPath = '"' + $localQwen + '"'

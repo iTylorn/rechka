@@ -31,7 +31,12 @@ def main():
     llm_smoke_test = "--llm-smoke-test" in sys.argv
     update_smoke_test = "--model-update-smoke-test" in sys.argv
     privacy_smoke_test = '--privacy-smoke-test' in sys.argv
+    media_smoke_test = '--media-smoke-test' in sys.argv
     try:
+        if media_smoke_test:
+            from media_validation import run_media_validation
+            run_media_validation()
+            return 0
         if privacy_smoke_test:
             from privacy_validation import run_validation
             index = sys.argv.index('--privacy-smoke-test')
@@ -107,7 +112,8 @@ def main():
         window.show()
         return app.exec()
     except Exception:
-        _write_startup_error(smoke_test or gpu_smoke_test or llm_smoke_test or update_smoke_test or privacy_smoke_test)
+        _write_startup_error(smoke_test or gpu_smoke_test or llm_smoke_test or update_smoke_test
+                             or privacy_smoke_test or media_smoke_test)
         return 1
 
 if __name__ == "__main__":

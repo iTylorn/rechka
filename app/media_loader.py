@@ -91,8 +91,12 @@ class MediaLoader:
             raise FileNotFoundError(f"Файл не найден: {source_path}")
         if not self.is_supported(source_path):
             raise ValueError(f"Неподдерживаемый формат: {Path(source_path).suffix or 'без расширения'}")
-        if not self.is_video(source_path):
+        is_video = self.is_video(source_path)
+        is_m4a = Path(source_path).suffix.lower() == ".m4a"
+        if not (is_video or is_m4a):
             return PreparedMedia(source_path, source_path, is_video=False)
+        if cancel_check and cancel_check():
+            raise MediaCancelled("Подготовка звука остановлена пользователем")
 
         ffmpeg = self.find_ffmpeg()
         if not ffmpeg:
@@ -101,24 +105,31 @@ class MediaLoader:
                 "ffmpeg.exe в папку программы tools."
             )
 
-        if keep_extracted_audio:
+        keep_wav = is_video and keep_extracted_audio
+        if keep_wav:
             output_path = self._unique_audio_path(source_path)
             temporary = False
         else:
-            descriptor, output_path = tempfile.mkstemp(prefix="whisper_video_", suffix=".wav")
+            prefix = "whisper_m4a_" if is_m4a else "whisper_video_"
+            descriptor, output_path = tempfile.mkstemp(prefix=prefix, suffix=".wav")
             os.close(descriptor)
             temporary = True
 
         if log:
-            destination = output_path if keep_extracted_audio else "временный WAV"
-            log(f"Извлечение звуковой дорожки: {destination}")
+            destination = output_path if keep_wav else "временный WAV"
+            action = "Декодирование M4A" if is_m4a else "Извлечение звуковой дорожки"
+            log(f"{action}: {destination}")
 
         command = [
-            ffmpeg, "-hide_banner", "-loglevel", "error", "-y",
+            ffmpeg, "-nostdin", "-hide_banner", "-loglevel", "error", "-y",
             "-i", source_path, "-map", "0:a:0", "-vn",
-            "-ar", "16000", "-ac", "2", "-c:a", "pcm_s16le",
-            output_path,
+            "-ar", "16000",
         ]
+        # Preserve the original channel layout of M4A recordings. Two independent
+        # microphone channels can be used by the speaker separation logic.
+        if is_video:
+            command += ["-ac", "2"]
+        command += ["-c:a", "pcm_s16le", "-abort_on", "empty_output", output_path]
         started = time.time()
         try:
             self._active_process = subprocess.Popen(
@@ -138,16 +149,20 @@ class MediaLoader:
                 except subprocess.TimeoutExpired:
                     continue
 
+            if cancel_check and cancel_check():
+                raise MediaCancelled("Подготовка звука остановлена пользователем")
             if self._active_process.returncode != 0:
                 details = stderr.decode("utf-8", errors="replace").strip()
                 if "matches no streams" in details or "does not contain any stream" in details:
-                    raise RuntimeError("В видеофайле не найдена звуковая дорожка")
+                    raise RuntimeError("В файле не найдена звуковая дорожка")
+                if is_m4a:
+                    raise RuntimeError(f"Не удалось прочитать M4A: {details or 'неизвестная ошибка FFmpeg'}")
                 raise RuntimeError(f"FFmpeg не смог извлечь звук: {details or 'неизвестная ошибка'}")
             if not os.path.isfile(output_path) or os.path.getsize(output_path) < 44:
                 raise RuntimeError("FFmpeg не создал корректный аудиофайл")
             if log:
                 log(f"Звуковая дорожка извлечена за {time.time() - started:.1f} сек.")
-            return PreparedMedia(source_path, output_path, is_video=True, temporary=temporary)
+            return PreparedMedia(source_path, output_path, is_video=is_video, temporary=temporary)
         except Exception:
             if os.path.isfile(output_path):
                 try:

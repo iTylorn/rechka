@@ -6,7 +6,7 @@ import winsound
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import imageio_ffmpeg
+from media_loader import MediaLoader
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QPalette
 from PySide6.QtWidgets import (
@@ -254,13 +254,17 @@ class SpeakerRenameDialog(QDialog):
             f"{sample.speaker}_{int(sample.start * 1000)}.wav",
         )
         duration = max(0.1, sample.end - sample.start)
+        ffmpeg = MediaLoader().find_ffmpeg()
+        if not ffmpeg:
+            raise RuntimeError("FFmpeg не найден")
         command = [
-            imageio_ffmpeg.get_ffmpeg_exe(),
+            ffmpeg,
             "-nostdin",
             "-hide_banner",
             "-loglevel", "error",
             "-ss", f"{sample.start:.3f}",
             "-i", self.media_path,
+            "-map", "0:a:0",
             "-t", f"{duration:.3f}",
             "-vn",
             "-ac", "2",
