@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from privacy_worker import PrivacyWorker
+from privacy_worker import COMPACT_RETRY, FINDINGS_SCHEMA, PrivacyWorker
 from transcript_privacy import Finding
 
 
@@ -34,6 +34,7 @@ class PrivacyWorkerTests(unittest.TestCase):
         worker = self.worker()
         worker.run()
         self.assertEqual(self.mock_factory.call_args.args, ('model', 'GPU'))
+        self.assertEqual(self.processor.generate_text.call_args.kwargs['json_schema'], FINDINGS_SCHEMA)
         self.assertEqual(self.results[0][0][0].original, 'Иван')
         self.assertEqual(self.results[0][1], '')
         self.assertFalse(self.errors)
@@ -80,6 +81,48 @@ class PrivacyWorkerTests(unittest.TestCase):
         self.worker('Иван', [Finding('Иван', replacement='[Автор]')], True).run()
         self.assertFalse(self.results)
         self.assertEqual(len(self.errors), 1)
+        self.assertIn('фрагмент 1 из 1', self.errors[0])
+        self.assertGreaterEqual(self.processor.generate_text.call_count, 2)
+
+    def test_short_fragment_retries_instead_of_discarding_valid_findings(self):
+        self.processor.generate_text.side_effect = ['[{"original":',
+            '[{"original":"Иван","category":"ФИО","entity":""}]', '[]']
+        worker = self.worker()
+        notices = []
+        worker.progress.connect(lambda _value, label: notices.append(label))
+        worker.run()
+        self.assertFalse(self.errors)
+        self.assertEqual([f.original for f in self.results[0][0]], ['Иван'])
+        retry = self.processor.generate_text.call_args_list[1]
+        self.assertTrue(retry.args[0].endswith(COMPACT_RETRY))
+        self.assertGreater(retry.kwargs['max_new_tokens'], 3000)
+        self.assertTrue(any('Уточняем' in label for label in notices))
+
+    def test_late_failure_does_not_publish_earlier_findings(self):
+        source = 'Алексей. ' + 'фраза ' * 700 + ' TITLEPRIVATE.'
+        def simulate(_prompt, user, **_kwargs):
+            if 'TITLEPRIVATE' in user:
+                return '[{"original":'
+            return '[{"original":"Алексей","category":"ФИО","entity":""}]' if 'Алексей' in user else '[]'
+        self.processor.generate_text.side_effect = simulate
+        self.worker(source).run()
+        self.assertFalse(self.results)
+        self.assertIn('фрагмент 2 из 2', self.errors[0])
+        self.assertNotIn('TITLEPRIVATE', self.errors[0])
+
+    def test_dense_fragment_can_subdivide_past_old_minimum_without_missing_boundaries(self):
+        secret = 'Алексей Иванов Секретный'
+        source = 'а ' * 170 + secret + ' б' * 170
+        def simulate(_prompt, user, **_kwargs):
+            chunk = user.removeprefix('SOURCE:\n')
+            if len(chunk) > 600:
+                return '['
+            return ('[{"original":"' + secret + '","category":"ФИО","entity":""}]'
+                    if secret in chunk else '[]')
+        self.processor.generate_text.side_effect = simulate
+        self.worker(source).run()
+        self.assertFalse(self.errors)
+        self.assertIn(secret, [f.original for f in self.results[0][0]])
 
     def test_truncated_dense_response_retries_smaller_chunks(self):
         self.processor.generate_text.side_effect = itertools.chain(['['], itertools.repeat('[]'))

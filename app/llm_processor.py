@@ -299,14 +299,15 @@ class LocalLLMProcessor:
         )
         return self._generate(system_prompt, instruction, 1200, 0.0, None)
 
-    def generate_text(self, system_prompt, user_prompt, max_new_tokens=3000):
+    def generate_text(self, system_prompt, user_prompt, max_new_tokens=3000, *, json_schema=None):
         """Structured extraction without transcript rewriting or file publication."""
         self._check_cancelled()
         if self.pipe is None:
             self.load()
-        return self._generate(system_prompt, user_prompt, max_new_tokens, 0.0, None)
+        return self._generate(system_prompt, user_prompt, max_new_tokens, 0.0, None,
+                              json_schema=json_schema)
 
-    def _generate(self, system_prompt, user_prompt, max_new_tokens, temperature, partial):
+    def _generate(self, system_prompt, user_prompt, max_new_tokens, temperature, partial, *, json_schema=None):
         self._check_cancelled()
         history = [
             {"role": "system", "content": system_prompt},
@@ -327,8 +328,11 @@ class LocalLLMProcessor:
         if config.do_sample:
             config.temperature = max(0.01, float(temperature))
             config.top_p = 0.9
-        config.repetition_penalty = 1.05
+        # Penalizing repeated JSON keys can bias the model towards ending the list.
+        config.repetition_penalty = 1.0 if json_schema is not None else 1.05
         config.apply_chat_template = False
+        if json_schema is not None:
+            config.structured_output_config = ov_genai.StructuredOutputConfig(json_schema=json_schema)
         streamed = []
         last_emit_size = 0
 
@@ -347,6 +351,10 @@ class LocalLLMProcessor:
             streamer=streamer,
         )
         self._check_cancelled()
+        if json_schema is not None and isinstance(result, str):
+            return result.strip()
+        if json_schema is not None and getattr(result, 'texts', None):
+            return str(result.texts[0]).strip()
         if streamed:
             text = "".join(streamed)
         elif isinstance(result, str):
@@ -355,7 +363,7 @@ class LocalLLMProcessor:
             text = result.texts[0]
         else:
             text = str(result)
-        return self._clean_result(text)
+        return text.strip() if json_schema is not None else self._clean_result(text)
 
     def _check_cancelled(self):
         if self.cancelled:
