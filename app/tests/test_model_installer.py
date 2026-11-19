@@ -24,7 +24,8 @@ class BetaProfileTests(unittest.TestCase):
             beta_store = root / "beta-models"
             with patch.dict(os.environ, {"APPDATA": folder}), patch.object(
                 settings_module, "MODEL_STORE_FOLDER", beta_store
-            ):
+            ), patch.object(settings_module, 'APP_CHANNEL', 'beta'), patch.object(
+                settings_module, 'APP_DATA_DIR', 'WhisperGUI-Beta'):
                 settings = Settings()
                 self.assertEqual(settings.get("speaker_names"), ["Анна"])
                 self.assertEqual(settings.get("model_store_folder"), str(beta_store))
@@ -35,6 +36,27 @@ class BetaProfileTests(unittest.TestCase):
                 self.assertEqual(reopened.get("speaker_names"), ["Борис"])
             self.assertEqual((stable / "settings.json").read_bytes(), original_bytes)
             self.assertEqual((stable / "prompts.json").read_text(), "[]")
+
+    def test_release_imports_beta_without_changing_either_old_profile(self):
+        with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {'APPDATA': folder}):
+            root = Path(folder)
+            beta = root / 'WhisperGUI-Beta'
+            beta.mkdir()
+            original = {'settings_version': 8, 'speaker_names': ['Анна'],
+                        'model_paths': {'qwen14': 'existing-model'}, 'anonymize_before_ai': True}
+            raw = json.dumps(original).encode('utf-8')
+            (beta / 'settings.json').write_bytes(raw)
+            (beta / 'prompts.json').write_text('[]', encoding='utf-8')
+            settings = Settings()
+            self.assertEqual(settings.config_dir, root / 'WhisperGUI-2')
+            self.assertEqual(settings.get('model_paths'), {'qwen14': 'existing-model'})
+            self.assertTrue(settings.get('anonymize_before_ai'))
+            self.assertEqual(settings.get('speaker_names'), ['Анна'])
+            self.assertEqual((beta / 'settings.json').read_bytes(), raw)
+            self.assertTrue((settings.config_dir / 'prompts.json').exists())
+            settings.set('speaker_names', ['Борис'])
+            self.assertEqual(Settings().get('speaker_names'), ['Борис'])
+            self.assertEqual((beta / 'settings.json').read_bytes(), raw)
 
     def test_failed_atomic_update_preserves_active_model(self):
         with tempfile.TemporaryDirectory() as folder, patch.dict(os.environ, {"APPDATA": folder}):

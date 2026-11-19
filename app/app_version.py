@@ -1,3 +1,3 @@
-APP_VERSION = "2.0.0-beta.4"
-APP_CHANNEL = "beta"
-APP_DATA_DIR = "WhisperGUI-Beta"
+APP_VERSION = "2.0.0"
+APP_CHANNEL = "stable"
+APP_DATA_DIR = "WhisperGUI-2"

@@ -1,4 +1,4 @@
-WhisperGUI 2.0.0-beta.1 — third-party components and model attribution
+Rechka 2.0.0 — third-party components and model attribution
 =============================================================
 
 PySide6 / Qt 6.11.2

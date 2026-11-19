@@ -106,12 +106,15 @@ class Settings:
 
     def load(self):
         source = self.config_file
-        import_stable = False
-        if not source.exists() and APP_CHANNEL == "beta":
-            legacy = self.config_dir.parent / "WhisperGUI" / "settings.json"
-            if legacy.is_file():
-                source = legacy
-                import_stable = True
+        import_profile = False
+        if not source.exists():
+            legacy_names = ('WhisperGUI',) if APP_CHANNEL == 'beta' else ('WhisperGUI-Beta', 'WhisperGUI')
+            for name in legacy_names:
+                legacy = self.config_dir.parent / name / 'settings.json'
+                if legacy.is_file() and legacy != source:
+                    source = legacy
+                    import_profile = True
+                    break
         if source.exists():
             try:
                 with open(source, "r", encoding="utf-8") as f:
@@ -142,10 +145,11 @@ class Settings:
                 if int(user_data.get("settings_version", 1)) < 7:
                     self.data["model_store_folder"] = str(MODEL_STORE_FOLDER)
                     self.data["settings_version"] = 7
-                if import_stable:
+                if import_profile:
                     self.data["model_store_folder"] = str(MODEL_STORE_FOLDER)
-                    self.data["model_paths"] = {}
-                    self.data["model_previous_paths"] = {}
+                    if source.parent.name == 'WhisperGUI':
+                        self.data["model_paths"] = {}
+                        self.data["model_previous_paths"] = {}
                 self.data["settings_version"] = 8
             except Exception as e:
                 print(f"Ошибка загрузки настроек: {e}")
@@ -167,7 +171,7 @@ class Settings:
         for key in ("model_paths", "model_previous_paths"):
             if not isinstance(self.data.get(key), dict):
                 self.data[key] = {}
-        if import_stable:
+        if import_profile:
             self.save()
             source_prompts = source.parent / "prompts.json"
             target_prompts = self.config_dir / "prompts.json"
